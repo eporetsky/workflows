@@ -10,45 +10,36 @@ import pandas as pd
 # conda install -c bioconda sambamba=0.8.2
 # conda install -c bioconda parallel-fastq-dump
 # conda install -c conda-forge genozip
+# conda install -c bioconda subread=2.0.1
 
 ########################## Globals ###########################
 # genome_index_name: I renamed the hisat2, gtf and genozip genome files to the genome_index_name+suffix
 # All these files are contained in the global folder
 
 ########################## Running workflow ###########################
+# By default, all fastq files to analyze should be copied to the "fastq" folder at the same level as the "ramdisk" folder
 # For RNAseq workflow testing change the fastp --reads_to_process to
 # a small number (10000) for faster and simpler workflow testing (only applies to fastp, not download step)
 
 # To prolong the life of the hard-drive I recommend to mount ramdisk on the "folder" variable (SRA project name)
-# mkdir PRJNA123456
 # sudo mount -t tmpfs -o size=95000m tmpfs PRJNA123456/
 
 # To run this snakemake workflow use:
-# snakemake -F -p -j1 --keep-going --snakefile sra2counts_ena.smk --config sra=PRJNA123456 idx=Zmays_493_APGv4_Phytozome
+# single-end: snakemake -p -j1 --keep-going --snakefile fastq2counts.smk --config sp="SINGLE" idx=Zmays_493_APGv4_Phytozome
+# paired-end: snakemake -p -j1 --keep-going --snakefile fastq2counts.smk --config sp="PAIRED" idx=Zmays_493_APGv4_Phytozome
 
+if len(glob.glob("fastq/*.fastq.gz")) > 0:
+  fastq_suffix = "fastq.gz"
+elif len(glob.glob("fastq/*.fq.gz") > 0 ):
+  fastq_suffix = "fq.gz"
+else:
+  print("Uncertain about fastq suffix")
 
-
-
-def get_reports(acc):
-    # Based on the EBI ENA tutorial on accessing their data
-    # https://ena-docs.readthedocs.io/en/latest/retrieval/programmatic-access/file-reports.html
-    # Change Study Accession (PRJNAXXXXXX) to get the 
-    # Change "fields=all" to get all columns in the metadata table
-    res = "read_run"
-    fie = "study_accession,tax_id,scientific_name,instrument_model,library_strategy,read_count,run_alias,sample_alias,fastq_ftp,fastq_md5"
-
-    # Generate the url that will containt the study accession information once opened
-    url="https://www.ebi.ac.uk/ena/portal/api/filereport?accession={0}&result={1}&fields={2}".format(acc, res, fie)
-    # Open the URL with pandas and load it as a dataframe
-    return pd.read_csv(url, sep="\t")
-
-accession_df = get_reports(config['sra'])
-fastq_type = "PAIRED" if len(accession_df["fastq_ftp"].values.tolist()[0].split(";")) == 2 else "SINGLE"
-accession_dict = {}
-SAMPLES = []
-for key, val in accession_df[["run_accession", "fastq_ftp"]].values.tolist():
-    accession_dict[key] = val.split(";")
-    SAMPLES.append(key)
+fastq_type = config['sp']
+if fastq_type == "PAIRED":
+  SAMPLES = [fl.replace("_1.fastq.gz","").replace("fastq/","") for fl in glob.glob("fastq/*_1.fastq.gz")]
+elif fastq_type == "SINGLE":
+  SAMPLES = [fl.replace(".fastq.gz","").replace("fastq/","") for fl in glob.glob("fastq/*.fastq.gz")]
 
 # If reads_to_process not defined, set to 0 to process all reads
 try: rtp = config['rtp'] 
@@ -68,14 +59,14 @@ rule all:
 # Run fastp trimming on the fastq file
 if fastq_type == "SINGLE":
   rule run_fastq:
+    input:
+      "fastq/{sample}.fastq.gz"
     output:
       temp("ramdisk/{sample}.fastq.gz"),
-    params:
-      ftp = lambda wc: accession_dict[wc.get("sample")][0],
     priority: 1
     run:
       shell("rm -f -r ramdisk/*")
-      shell("axel --quiet -n 32 -o ramdisk {params.ftp}")
+      shell("cp {input} ramdisk/")
 
   # hisat2 runs faster when using non-compressed fastq files
   rule run_fastp:
@@ -95,7 +86,7 @@ if fastq_type == "SINGLE":
   
   rule run_hisat2:
     input:
-      temp("ramdisk/{sample}.fastq"),
+      "ramdisk/{sample}.fastq",
     output:
       "reports/hisat2_{sample}.txt",
       "ramdisk/{sample}.bam"
@@ -110,7 +101,7 @@ if fastq_type == "SINGLE":
 
   rule run_featureCounts_genozip:
     input:
-        temp("ramdisk/{sample}.bam"),
+        "ramdisk/{sample}.bam",
     output:
         "counts/{sample}.counts.gz",
         "genozip/{sample}.genozip",
@@ -126,17 +117,17 @@ if fastq_type == "SINGLE":
 # Run fastp trimming on the fastq file
 if fastq_type == "PAIRED":
   rule run_fastq:
+    input:
+      "fastq/{sample}_1.fastq.gz",
+      "fastq/{sample}_2.fastq.gz",
     output:
       temp("ramdisk/{sample}_1.fastq.gz"),
       temp("ramdisk/{sample}_2.fastq.gz"),
-    params:
-      ftp1 = lambda wc: accession_dict[wc.get("sample")][0],
-      ftp2 = lambda wc: accession_dict[wc.get("sample")][1],
     priority: 1
     run:
       shell("rm -f -r ramdisk/*")
-      shell("axel --quiet -n 32 -o ramdisk {params.ftp1}")
-      shell("axel --quiet -n 32 -o ramdisk {params.ftp2}")
+      shell("cp fastq/{input[0]} ramdisk/")
+      shell("cp fastq/{input[1]} ramdisk/")
 
   # hisat2 runs faster when using non-compressed fastq files
   rule run_fastp:
